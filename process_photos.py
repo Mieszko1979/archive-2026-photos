@@ -8,7 +8,14 @@ MAX_SIZE = 1600
 def get_decimal_from_dms(dms, ref):
     if dms is None or ref is None: return None
     try:
-        parts = [float(x[0])/float(x[1]) if isinstance(x, tuple) else float(x) for x in dms]
+        # Обработка разных форматов Pillow (кортежи или числа)
+        parts = []
+        for x in dms:
+            if isinstance(x, (tuple, list)):
+                parts.append(float(x[0]) / float(x[1]))
+            else:
+                parts.append(float(x))
+        
         val = parts[0] + parts[1]/60.0 + parts[2]/3600.0
         return -val if ref in ['S', 'W'] else val
     except: return None
@@ -23,6 +30,7 @@ def get_gps_from_file(image_path):
                 decoded = TAGS.get(tag, tag)
                 if decoded == "GPSInfo":
                     for t in val: gps[GPSTAGS.get(t, t)] = val[t]
+            
             if "GPSLatitude" in gps:
                 return {
                     "lat": get_decimal_from_dms(gps["GPSLatitude"], gps.get("GPSLatitudeRef")),
@@ -34,24 +42,20 @@ def get_gps_from_file(image_path):
 def resize_image(image_path):
     try:
         with Image.open(image_path) as img:
-            # Исправляем ориентацию (чтобы фото не ложились на бок)
+            # Исправляем поворот фото
             img = ImageOps.exif_transpose(img)
+            # Сжимаем, если фото больше лимита
             if img.width > MAX_SIZE or img.height > MAX_SIZE:
-                print(f"Сжимаем {image_path}...")
                 img.thumbnail((MAX_SIZE, MAX_SIZE), Image.Resampling.LANCZOS)
-                img.save(image_path, "JPEG", quality=85, optimize=True)
-                return True
-            else:
-                # Даже если размер ок, пересохраняем для оптимизации веса
-                img.save(image_path, "JPEG", quality=85, optimize=True)
-                return True
-    except Exception as e:
-        print(f"Ошибка при сжатии {image_path}: {e}")
-        return False
+            
+            # Сохраняем всегда (для оптимизации веса), качество 85
+            img.save(image_path, "JPEG", quality=85, optimize=True)
+            return True
+    except: return False
 
 # --- ГЛАВНАЯ ЛОГИКА ---
 
-# 1. Читаем существующий photos.json
+# 1. Читаем существующий photos.json (защита правок)
 existing_photos = {}
 if os.path.exists('photos.json'):
     try:
@@ -60,36 +64,36 @@ if os.path.exists('photos.json'):
             for item in data:
                 existing_photos[item['url']] = {"lat": item['lat'], "lng": item['lng']}
     except Exception as e:
-        print(f"Предупреждение: не удалось прочитать photos.json: {e}")
+        print(f"Ошибка чтения photos.json: {e}")
 
 new_photos_list = []
-# 2. Получаем список всех JPG файлов в папке
 files = [f for f in os.listdir('.') if f.lower().endswith(('.jpg', '.jpeg'))]
 
 for file in files:
-    # --- ШАГ 1: СЖИМАЕМ ФОТО В ЛЮБОМ СЛУЧАЕ ---
-    resize_image(file)
-
-    # --- ШАГ 2: РАБОТАЕМ С КООРДИНАТАМИ ---
+    # ШАГ 1: Сначала получаем координаты (из JSON или из EXIF оригинала)
+    coords = None
+    
     if file in existing_photos:
-        # Если фото уже было в базе, берем старые координаты (защита ручных правок)
         coords = existing_photos[file]
-        print(f"Используем сохраненные координаты для: {file}")
+        print(f"[JSON] {file} - координаты взяты из ваших правок")
     else:
-        # Если фото новое, пытаемся вытащить GPS из EXIF
         coords = get_gps_from_file(file)
         if coords:
-            print(f"Извлечен GPS для нового фото: {file}")
+            print(f"[NEW] {file} - GPS извлечен из файла")
         else:
-            print(f"!!! ВНИМАНИЕ: В фото {file} нет GPS. В photos.json оно не попадет, пока не пропишете координаты вручную.")
+            print(f"[SKIP] {file} - в файле нет GPS")
 
-    # 3. Если координаты есть (новые или старые), добавляем в итоговый список
+    # ШАГ 2: Теперь сжимаем фото (после того как GPS считан!)
+    if resize_image(file):
+        print(f"      {file} оптимизирован/сжат")
+
+    # ШАГ 3: Если координаты были найдены хоть где-то — добавляем в список
     if coords:
         new_photos_list.append({"url": file, "lat": coords["lat"], "lng": coords["lng"]})
 
-# 4. Сохраняем итоговый список
+# 4. Сохраняем результат
 new_photos_list.sort(key=lambda x: x['url'])
 with open('photos.json', 'w', encoding='utf-8') as f:
     json.dump(new_photos_list, f, indent=4, ensure_ascii=False)
 
-print(f"\nГотово! Обработано файлов: {len(files)}. В карте (photos.json) прописано: {len(new_photos_list)}.")
+print(f"\nГотово! Обработано: {len(files)}. В карте: {len(new_photos_list)}.")
