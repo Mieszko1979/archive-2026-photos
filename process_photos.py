@@ -34,15 +34,22 @@ def get_gps_from_file(image_path):
 def resize_image(image_path):
     try:
         with Image.open(image_path) as img:
+            # Исправляем ориентацию (чтобы фото не ложились на бок)
             img = ImageOps.exif_transpose(img)
             if img.width > MAX_SIZE or img.height > MAX_SIZE:
+                print(f"Сжимаем {image_path}...")
                 img.thumbnail((MAX_SIZE, MAX_SIZE), Image.Resampling.LANCZOS)
                 img.save(image_path, "JPEG", quality=85, optimize=True)
                 return True
-    except: return False
-    return False
+            else:
+                # Даже если размер ок, пересохраняем для оптимизации веса
+                img.save(image_path, "JPEG", quality=85, optimize=True)
+                return True
+    except Exception as e:
+        print(f"Ошибка при сжатии {image_path}: {e}")
+        return False
 
-# --- ГЛАВНАЯ ЛОГИКА ЗАЩИТЫ ВАШИХ ПРАВОК ---
+# --- ГЛАВНАЯ ЛОГИКА ---
 
 # 1. Читаем существующий photos.json
 existing_photos = {}
@@ -51,7 +58,6 @@ if os.path.exists('photos.json'):
         with open('photos.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
             for item in data:
-                # Запоминаем координаты, которые вы ввели вручную
                 existing_photos[item['url']] = {"lat": item['lat'], "lng": item['lng']}
     except Exception as e:
         print(f"Предупреждение: не удалось прочитать photos.json: {e}")
@@ -61,25 +67,29 @@ new_photos_list = []
 files = [f for f in os.listdir('.') if f.lower().endswith(('.jpg', '.jpeg'))]
 
 for file in files:
-    # 3. Если фото уже есть в JSON — БЕРЕМ ВАШИ КООРДИНАТЫ ИЗ ФАЙЛА
+    # --- ШАГ 1: СЖИМАЕМ ФОТО В ЛЮБОМ СЛУЧАЕ ---
+    resize_image(file)
+
+    # --- ШАГ 2: РАБОТАЕМ С КООРДИНАТАМИ ---
     if file in existing_photos:
+        # Если фото уже было в базе, берем старые координаты (защита ручных правок)
         coords = existing_photos[file]
-        print(f"Сохраняем ваши правки для: {file}")
+        print(f"Используем сохраненные координаты для: {file}")
     else:
-        # 4. Если фото абсолютно новое — вытаскиваем GPS и сжимаем
+        # Если фото новое, пытаемся вытащить GPS из EXIF
         coords = get_gps_from_file(file)
         if coords:
-            print(f"Новое фото найдено: {file}. Извлекаем GPS...")
-            resize_image(file)
+            print(f"Извлечен GPS для нового фото: {file}")
         else:
-            print(f"В новом фото {file} нет GPS-данных!")
+            print(f"!!! ВНИМАНИЕ: В фото {file} нет GPS. В photos.json оно не попадет, пока не пропишете координаты вручную.")
 
+    # 3. Если координаты есть (новые или старые), добавляем в итоговый список
     if coords:
         new_photos_list.append({"url": file, "lat": coords["lat"], "lng": coords["lng"]})
 
-# 5. Сохраняем итоговый список
+# 4. Сохраняем итоговый список
 new_photos_list.sort(key=lambda x: x['url'])
 with open('photos.json', 'w', encoding='utf-8') as f:
     json.dump(new_photos_list, f, indent=4, ensure_ascii=False)
 
-print(f"Готово! В списке: {len(new_photos_list)} фото. Ваши правки защищены.")
+print(f"\nГотово! Обработано файлов: {len(files)}. В карте (photos.json) прописано: {len(new_photos_list)}.")
