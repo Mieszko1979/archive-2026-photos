@@ -1,0 +1,19 @@
+name: Auto Clean History (Monthly)
+on:
+  schedule: [{cron: '0 0 1 * *'}]
+  workflow_dispatch:
+jobs:
+  reset_history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git checkout --orphan temporary_branch
+          git add -A
+          git commit -m "Cleanup"
+          git branch -D main
+          git branch -m main
+          git push -f origin main
